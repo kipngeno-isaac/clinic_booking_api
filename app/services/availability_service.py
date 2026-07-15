@@ -1,14 +1,11 @@
 from datetime import date as date_, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.repositories import doctor_repository
+from app.core.constants import CLINIC_TZ, SATURDAY, SLOT_MINUTES
+from app.models.appointment import AppointmentStatus
+from app.repositories import appointment_repository, doctor_repository
 from app.schemas.doctor import AvailabilitySlot
-
-CLINIC_TZ = ZoneInfo("Africa/Nairobi")
-SLOT_MINUTES = 30
-SATURDAY = 5
 
 
 class DoctorNotFoundError(Exception):
@@ -24,20 +21,28 @@ def get_availability(db: Session, doctor_id: int, on: date_) -> list[Availabilit
     if on.weekday() >= SATURDAY:
         return []
 
+    booked_starts = {
+        appt.slot_start
+        for appt in appointment_repository.list_for_doctor_on_date(
+            db, doctor_id=doctor_id, on=on, tz=CLINIC_TZ
+        )
+        if appt.status in (AppointmentStatus.PENDING, AppointmentStatus.APPROVED)
+    }
+
     step = timedelta(minutes=SLOT_MINUTES)
     cursor = datetime.combine(on, doctor.work_start, tzinfo=CLINIC_TZ)
     local_end = datetime.combine(on, doctor.work_end, tzinfo=CLINIC_TZ)
 
     slots: list[AvailabilitySlot] = []
     while cursor + step <= local_end:
-        slots.append(
-            AvailabilitySlot(
-                start=cursor.astimezone(timezone.utc),
-                end=(cursor + step).astimezone(timezone.utc),
+        slot_start_utc = cursor.astimezone(timezone.utc)
+        if slot_start_utc not in booked_starts:
+            slots.append(
+                AvailabilitySlot(
+                    start=slot_start_utc,
+                    end=(cursor + step).astimezone(timezone.utc),
+                )
             )
-        )
         cursor += step
 
-    # TODO: exclude slots with a pending/approved Appointment once that
-    # model exists (see README "Key Design Decisions & Trade-offs").
     return slots
