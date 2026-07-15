@@ -4,6 +4,10 @@ from app.models.doctor import Doctor
 from app.schemas.doctor import DoctorCreate
 
 
+def get(db: Session, doctor_id: int) -> Doctor | None:
+    return db.get(Doctor, doctor_id)
+
+
 def create(db: Session, doctor_in: DoctorCreate) -> Doctor:
     doctor = Doctor(
         name=doctor_in.name,

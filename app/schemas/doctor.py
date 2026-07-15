@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -24,3 +24,8 @@ class DoctorRead(BaseModel):
     name: str
     work_start: time
     work_end: time
+
+
+class AvailabilitySlot(BaseModel):
+    start: datetime
+    end: datetime
