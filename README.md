@@ -80,3 +80,180 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 - Requesting availability or booking against a non-existent `doctor_id`.
 - Booking near a UTC day boundary that falls on a different local (Africa/Nairobi) day, or vice versa.
 - Rejecting/cancelling with a missing or empty reason.
+
+## Implementation
+
+### Project Structure
+
+```
+app/
+  main.py                     # FastAPI app instance, mounts the v1 router
+  core/
+    config.py                  # Settings (DB connection) via pydantic-settings, reads .env
+    constants.py                # Shared clinic-schedule constants (timezone, slot size, lead time)
+  db/
+    session.py                   # SQLAlchemy engine + SessionLocal
+    base.py                       # Declarative Base
+  models/                       # SQLAlchemy ORM models: Doctor, Patient, Appointment
+  schemas/                      # Pydantic request/response schemas
+  repositories/                 # Data-access layer (DB queries only, no business logic)
+  services/                     # Business logic: validation, status transitions
+  api/
+    deps.py                       # get_db dependency
+    v1/router.py                   # aggregates versioned routers
+    v1/endpoints/                   # doctors, patients, appointments, health
+alembic/                       # DB migrations
+```
+
+Each request flows `api` → `services` → `repositories` → `db`, so HTTP concerns, business rules, and persistence stay separated. `services` raise plain Python exceptions (e.g. `DoctorNotFoundError`, `InvalidStatusTransitionError`); the `api` layer is the only place that translates those into HTTP status codes.
+
+### Running Locally
+
+Prerequisites: Python 3.10+, Docker.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env          # defaults work as-is for local dev
+docker compose up -d db       # starts Postgres on localhost:5432
+alembic upgrade head          # creates the schema
+
+uvicorn app.main:app --reload
+```
+
+Verify with `curl http://127.0.0.1:8000/health` — expect `{"app": "ok", "db": "ok"}`. Interactive API docs (Swagger UI) are at `http://127.0.0.1:8000/docs`.
+
+### Database Migrations
+
+Alembic is wired to `Settings.database_url` (so `.env` stays the single source of truth) and `Base.metadata` (so new models are autodetected). Workflow for a schema change:
+
+```bash
+# after adding/editing a model, and importing it in alembic/env.py
+alembic revision --autogenerate -m "description of the change"
+# review the generated file, then:
+alembic upgrade head
+```
+
+### API Reference
+
+Endpoints from the original spec:
+
+| Method & Path | Status |
+|---|---|
+| `POST /appointments` | ✅ implemented |
+| `GET /doctors/{id}/availability` | ✅ implemented |
+| `PATCH /appointments/{id}/approve` | ✅ implemented |
+| `PATCH /appointments/{id}/reject` | ✅ implemented |
+| `PATCH /appointments/{id}/cancel` | ✅ implemented |
+| `GET /patients/{id}/appointments` *(stretch)* | ⬜ not yet built |
+
+Added beyond the original spec, since auth/user-management is out of scope (see Assumptions) and there was otherwise no way to seed data:
+
+- `POST /doctors` — create a doctor. Enforces a unique `name` (`409` on duplicate) so retries can't silently create duplicate doctors.
+- `POST /patients` — create a patient. No uniqueness constraint — unlike doctors, two real patients can legitimately share a name.
+- `GET /health` — reports both app and DB status (`{"app": "ok", "db": "ok"}`), `503` if the DB is unreachable.
+
+### Sample Requests
+
+**Health check**
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+```json
+{"app": "ok", "db": "ok"}
+```
+
+**Create a doctor**
+
+```bash
+curl -X POST http://127.0.0.1:8000/doctors \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Dr. Jane Wanjiru", "work_start": "09:00:00", "work_end": "17:00:00"}'
+```
+```json
+{"id": 1, "name": "Dr. Jane Wanjiru", "work_start": "09:00:00", "work_end": "17:00:00"}
+```
+A repeat call with the same `name` returns `409 {"detail": "A doctor named 'Dr. Jane Wanjiru' already exists"}`.
+
+**Create a patient**
+
+```bash
+curl -X POST http://127.0.0.1:8000/patients \
+  -H "Content-Type: application/json" \
+  -d '{"name": "John Kamau", "email": "john@example.com"}'
+```
+```json
+{"id": 1, "name": "John Kamau", "email": "john@example.com"}
+```
+`email` is optional.
+
+**Check a doctor's availability**
+
+```bash
+curl "http://127.0.0.1:8000/doctors/1/availability?on=2026-07-16"
+```
+```json
+[
+  {"start": "2026-07-16T06:00:00Z", "end": "2026-07-16T06:30:00Z"},
+  {"start": "2026-07-16T06:30:00Z", "end": "2026-07-16T07:00:00Z"}
+]
+```
+Times are in UTC (09:00 Africa/Nairobi = 06:00 UTC). A weekend date returns `[]`; an unknown `doctor_id` returns `404`.
+
+**Book an appointment**
+
+```bash
+curl -X POST http://127.0.0.1:8000/appointments \
+  -H "Content-Type: application/json" \
+  -d '{"doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T06:00:00Z"}'
+```
+```json
+{
+  "id": 1,
+  "doctor_id": 1,
+  "patient_id": 1,
+  "slot_start": "2026-07-16T06:00:00Z",
+  "status": "pending",
+  "reason": null,
+  "created_at": "2026-07-15T11:36:13.558993Z"
+}
+```
+`slot_start` must be ≥60 minutes from now, within the doctor's working hours, aligned to the 30-minute grid, and not already taken — each violation returns `422`; an already-booked slot returns `409`.
+
+**Approve an appointment**
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/appointments/1/approve
+```
+```json
+{"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T06:00:00Z", "status": "approved", "reason": null, "created_at": "..."}
+```
+Only valid from `pending`; otherwise `409`.
+
+**Reject an appointment**
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/appointments/1/reject \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Doctor unavailable"}'
+```
+```json
+{"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T06:00:00Z", "status": "rejected", "reason": "Doctor unavailable", "created_at": "..."}
+```
+Only valid from `pending`; `reason` is required and can't be blank.
+
+**Cancel an appointment**
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/appointments/1/cancel \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Patient requested cancellation"}'
+```
+```json
+{"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T06:00:00Z", "status": "cancelled", "reason": "Patient requested cancellation", "created_at": "..."}
+```
+Valid from `pending` or `approved`; returns `409` if already `cancelled` or `rejected`.
+
