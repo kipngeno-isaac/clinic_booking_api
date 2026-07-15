@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Time
+from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 
@@ -12,3 +13,5 @@ class Doctor(Base):
     # Working hours apply Mon-Fri; see README "Assumptions".
     work_start = Column(Time, nullable=False)
     work_end = Column(Time, nullable=False)
+
+    appointments = relationship("Appointment", back_populates="doctor")
