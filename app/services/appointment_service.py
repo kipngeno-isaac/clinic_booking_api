@@ -25,6 +25,14 @@ class SlotUnavailableError(Exception):
     pass
 
 
+class AppointmentNotFoundError(Exception):
+    pass
+
+
+class InvalidStatusTransitionError(Exception):
+    pass
+
+
 def book_appointment(db: Session, appointment_in: AppointmentCreate) -> Appointment:
     doctor = doctor_repository.get(db, appointment_in.doctor_id)
     if doctor is None:
@@ -74,3 +82,48 @@ def book_appointment(db: Session, appointment_in: AppointmentCreate) -> Appointm
     except IntegrityError as exc:
         db.rollback()
         raise SlotUnavailableError("This slot is already booked") from exc
+
+
+def _get_or_raise(db: Session, appointment_id: int) -> Appointment:
+    appointment = appointment_repository.get(db, appointment_id)
+    if appointment is None:
+        raise AppointmentNotFoundError(f"Appointment {appointment_id} not found")
+    return appointment
+
+
+def approve_appointment(db: Session, appointment_id: int) -> Appointment:
+    appointment = _get_or_raise(db, appointment_id)
+    if appointment.status != AppointmentStatus.PENDING:
+        raise InvalidStatusTransitionError(
+            f"Cannot approve an appointment with status '{appointment.status.value}'"
+        )
+    appointment.status = AppointmentStatus.APPROVED
+    db.commit()
+    db.refresh(appointment)
+    return appointment
+
+
+def reject_appointment(db: Session, appointment_id: int, reason: str) -> Appointment:
+    appointment = _get_or_raise(db, appointment_id)
+    if appointment.status != AppointmentStatus.PENDING:
+        raise InvalidStatusTransitionError(
+            f"Cannot reject an appointment with status '{appointment.status.value}'"
+        )
+    appointment.status = AppointmentStatus.REJECTED
+    appointment.reason = reason
+    db.commit()
+    db.refresh(appointment)
+    return appointment
+
+
+def cancel_appointment(db: Session, appointment_id: int, reason: str) -> Appointment:
+    appointment = _get_or_raise(db, appointment_id)
+    if appointment.status in (AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED):
+        raise InvalidStatusTransitionError(
+            f"Cannot cancel an appointment with status '{appointment.status.value}'"
+        )
+    appointment.status = AppointmentStatus.CANCELLED
+    appointment.reason = reason
+    db.commit()
+    db.refresh(appointment)
+    return appointment

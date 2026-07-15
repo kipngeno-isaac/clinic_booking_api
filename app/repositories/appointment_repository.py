@@ -5,6 +5,10 @@ from sqlalchemy.orm import Session
 from app.models.appointment import Appointment
 
 
+def get(db: Session, appointment_id: int) -> Appointment | None:
+    return db.get(Appointment, appointment_id)
+
+
 def create(db: Session, appointment: Appointment) -> Appointment:
     db.add(appointment)
     db.commit()
