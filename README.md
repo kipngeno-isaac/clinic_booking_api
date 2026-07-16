@@ -104,6 +104,7 @@ app/
     v1/router.py                   # aggregates versioned routers
     v1/endpoints/                   # doctors, patients, appointments, health
 alembic/                       # DB migrations
+tests/                        # pytest suite (helpers.py has shared fixtures/date utilities)
 ```
 
 Each request flows `api` → `services` → `repositories` → `db`, so HTTP concerns, business rules, and persistence stay separated. `services` raise plain Python exceptions (e.g. `DoctorNotFoundError`, `InvalidStatusTransitionError`); the `api` layer is the only place that translates those into HTTP status codes.
@@ -281,5 +282,13 @@ docker compose up -d db     # tests need a live Postgres instance
 pytest
 ```
 
-32 tests in `tests/`, covering the full booking lifecycle and the edge cases listed above: creation (doctors/patients, including duplicate-name handling), availability (weekday grid, weekend empty list, unknown doctor, booked-slot exclusion), and booking/approve/reject/cancel (happy paths, every invalid-status-transition case, lead-time/working-hours/grid-alignment/weekend validation, and the double-booking race condition via the DB constraint).
+38 tests in `tests/`, covering the full booking lifecycle and the edge cases listed above: creation (doctors/patients, including duplicate-name handling), availability (weekday grid, weekend empty list, unknown doctor, booked-slot exclusion), booking/approve/reject/cancel (happy paths, every invalid-status-transition case, lead-time/working-hours/grid-alignment/weekend validation, the double-booking race condition via the DB constraint, and every `404` on an unknown ID), the `/health` DB-unreachable branch (mocked `OperationalError`), and the `get_db` dependency itself (session yielded and closed).
+
+**Coverage:**
+
+```bash
+pytest --cov=app --cov-report=term-missing
+```
+
+Currently 100% line coverage (404/404 statements).
 
