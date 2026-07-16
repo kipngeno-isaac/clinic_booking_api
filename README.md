@@ -138,6 +138,36 @@ alembic revision --autogenerate -m "description of the change"
 alembic upgrade head
 ```
 
+### CI/CD
+
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`/`dev`:
+
+1. **`test`** — spins up a `postgres:16-alpine` service container, installs `requirements-dev.txt`, runs the full pytest suite with coverage.
+2. **`build`** — `needs: test`, so it only runs if every test passes. Builds the Docker image to validate it builds cleanly. On a push to `main` specifically (i.e. a PR just got merged), it additionally logs into **Docker Hub** and pushes the image (`docker.io/kipngenoisaac/clinic-booking-api`) tagged both `latest` and `<commit-sha>`.
+3. **`deploy`** — `needs: build`, same "push to `main`" condition. SSHes into the deployment VM (via [`appleboy/ssh-action`](https://github.com/appleboy/ssh-action)) and runs `docker compose -f docker-compose.prod.yml pull && up -d`.
+
+**Required GitHub Actions secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Purpose |
+|---|---|
+| `DOCKERHUB_USERNAME` | Docker Hub username (`kipngenoisaac`) |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (Account Settings → Security → Access Tokens — not your account password) |
+| `VM_HOST` | VM's public IP or hostname |
+| `VM_USER` | SSH user on the VM |
+| `VM_SSH_KEY` | Private key for that user (public key must be in the VM's `~/.ssh/authorized_keys`) |
+| `VM_APP_DIR` | Absolute path on the VM containing `docker-compose.prod.yml` and `.env` |
+
+**VM-side setup — done:** Docker 29.6.1 + Compose v5.3.1 confirmed installed and running, `ubuntu` user is in the `docker` group (no `sudo` needed), `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are already in place.
+
+**Still outstanding:**
+- Add the 6 secrets above in GitHub.
+- Make the Docker Hub repo (`kipngenoisaac/clinic-booking-api`) pullable from the VM — public repos need nothing extra; a private repo needs `docker login` on the VM with a Docker Hub access token first.
+- Confirm the cloud provider's security group/network firewall allows inbound TCP 8000 (the VM's own `ufw` is inactive, so nothing local is blocking it, but that's a separate layer).
+
+`docker-compose.prod.yml` differs from the dev `docker-compose.yml`: it pulls the prebuilt Docker Hub image instead of building locally, drops the `--reload` flag and the source bind-mount, and — since this is a publicly reachable VM — does **not** expose Postgres's port to the host, only to `api` over the internal Docker network.
+
+**Not yet verified end-to-end:** the `test` and `build` jobs (image build, tagging) have been validated locally against equivalent configuration. The actual SSH deploy and Docker Hub push are unverified until the secrets above are added and a real PR merges to `main`.
+
 ### API Reference
 
 Endpoints from the original spec:
