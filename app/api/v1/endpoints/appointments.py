@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.appointment import AppointmentCreate, AppointmentRead, AppointmentStatusUpdate
+from app.schemas.appointment import (
+    AppointmentCreate,
+    AppointmentReschedule,
+    AppointmentRead,
+    AppointmentStatusUpdate,
+)
 from app.services import appointment_service
 from app.services.appointment_service import (
     AppointmentNotFoundError,
@@ -63,4 +68,22 @@ def cancel_appointment(
     except AppointmentNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidStatusTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.patch("/{appointment_id}/reschedule", response_model=AppointmentRead)
+def reschedule_appointment(
+    appointment_id: int, payload: AppointmentReschedule, db: Session = Depends(get_db)
+) -> AppointmentRead:
+    try:
+        return appointment_service.reschedule_appointment(db, appointment_id, payload.slot_start)
+    except AppointmentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InvalidStatusTransitionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except InvalidSlotError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except SlotUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

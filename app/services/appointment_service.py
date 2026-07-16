@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import CLINIC_TZ, MIN_BOOKING_LEAD_MINUTES, SATURDAY, SLOT_MINUTES
 from app.models.appointment import Appointment, AppointmentStatus
+from app.models.doctor import Doctor
 from app.repositories import appointment_repository, doctor_repository, patient_repository
 from app.schemas.appointment import AppointmentCreate
 
@@ -33,16 +34,7 @@ class InvalidStatusTransitionError(Exception):
     pass
 
 
-def book_appointment(db: Session, appointment_in: AppointmentCreate) -> Appointment:
-    doctor = doctor_repository.get(db, appointment_in.doctor_id)
-    if doctor is None:
-        raise DoctorNotFoundError(f"Doctor {appointment_in.doctor_id} not found")
-
-    patient = patient_repository.get(db, appointment_in.patient_id)
-    if patient is None:
-        raise PatientNotFoundError(f"Patient {appointment_in.patient_id} not found")
-
-    slot_start = appointment_in.slot_start
+def _validate_slot(doctor: Doctor, slot_start: datetime) -> datetime:
     slot_start_utc = (
         slot_start.replace(tzinfo=timezone.utc)
         if slot_start.tzinfo is None
@@ -70,6 +62,20 @@ def book_appointment(db: Session, appointment_in: AppointmentCreate) -> Appointm
     offset_minutes = (local_slot - local_work_start).total_seconds() / 60
     if offset_minutes % SLOT_MINUTES != 0:
         raise InvalidSlotError("slot_start does not align to a 30-minute slot boundary")
+
+    return slot_start_utc
+
+
+def book_appointment(db: Session, appointment_in: AppointmentCreate) -> Appointment:
+    doctor = doctor_repository.get(db, appointment_in.doctor_id)
+    if doctor is None:
+        raise DoctorNotFoundError(f"Doctor {appointment_in.doctor_id} not found")
+
+    patient = patient_repository.get(db, appointment_in.patient_id)
+    if patient is None:
+        raise PatientNotFoundError(f"Patient {appointment_in.patient_id} not found")
+
+    slot_start_utc = _validate_slot(doctor, appointment_in.slot_start)
 
     appointment = Appointment(
         doctor_id=doctor.id,
@@ -125,5 +131,26 @@ def cancel_appointment(db: Session, appointment_id: int, reason: str) -> Appoint
     appointment.status = AppointmentStatus.CANCELLED
     appointment.reason = reason
     db.commit()
+    db.refresh(appointment)
+    return appointment
+
+
+def reschedule_appointment(db: Session, appointment_id: int, new_slot_start: datetime) -> Appointment:
+    appointment = _get_or_raise(db, appointment_id)
+    # Terminal states can't be moved; only pending/approved are "active".
+    if appointment.status in (AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED):
+        raise InvalidStatusTransitionError(
+            f"Cannot reschedule an appointment with status '{appointment.status.value}'"
+        )
+
+    doctor = doctor_repository.get(db, appointment.doctor_id)
+    slot_start_utc = _validate_slot(doctor, new_slot_start)
+
+    appointment.slot_start = slot_start_utc
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise SlotUnavailableError("This slot is already booked") from exc
     db.refresh(appointment)
     return appointment

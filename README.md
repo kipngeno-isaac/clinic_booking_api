@@ -39,6 +39,7 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 - `PATCH /appointments/{id}/approve` — Doctor approves a pending appointment.
 - `PATCH /appointments/{id}/reject` — Doctor rejects a pending appointment with a reason. The slot becomes bookable again.
 - `PATCH /appointments/{id}/cancel` — Cancel an appointment with a reason. The slot becomes bookable again. Returns an error if already cancelled or rejected.
+- `PATCH /appointments/{id}/reschedule` — Move an appointment to a new slot. The original slot becomes bookable again and the new slot is validated exactly like a fresh booking (working hours, lead time, alignment, not already taken). Returns an error if the appointment is `cancelled` or `rejected`.
 - `GET /patients/{id}/appointments` *(stretch)* — Upcoming appointments sorted by date.
 
 **Non-functional**
@@ -58,11 +59,12 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 ### Key Design Decisions & Trade-offs
 
 - **Slots are computed, not pre-generated.** Availability for `GET /doctors/{id}/availability` is derived at request time from the doctor's working hours minus existing `pending`/`approved` appointments, rather than materializing a row per slot per day. Simpler to reason about and avoids a background job to pre-populate future slots; the trade-off is a bit more computation per availability request, which is acceptable at this scale.
-- **Concurrency safety via a DB constraint, not just an application check.** A "check then insert" pattern is a race condition under concurrent requests for the same slot. The plan is a unique constraint on `(doctor_id, slot_start)` (or `SELECT ... FOR UPDATE` inside a transaction) so the database — not application logic — is the source of truth for "slot taken."
+- **Concurrency safety via a DB constraint, not just an application check.** A "check then insert" pattern is a race condition under concurrent requests for the same slot. A partial unique index on `(doctor_id, slot_start)` (scoped to `pending`/`approved` rows) enforces this at the database level instead, so the database — not application logic — is the source of truth for "slot taken." Verified by a concurrency test that fires two simultaneous booking requests for the same slot and asserts only one succeeds.
 - **Booking creates a pending appointment, not an immediately confirmed one.** A slot is held (excluded from availability) as soon as it's booked, but requires doctor approval to become confirmed. This models real clinic behavior — the doctor has final say over their schedule — while still preventing double-booking of the same slot during the pending window.
 - **Status changes are flags, not deletes.** Cancelled/rejected appointments stay in the table rather than being removed, preserving history and freeing the slot without losing the audit trail.
+- **Rescheduling is disallowed for `rejected`, not just `cancelled`.** The spec only calls out returning an error for a cancelled appointment; `rejected` is treated the same way since it's an equally terminal state — a doctor already declined the slot, so moving it to a new time doesn't reflect their decision. This is noted as an ambiguity resolution rather than a spec requirement. Rescheduling reuses the exact same slot validation as a fresh booking (working hours, lead time, alignment, uniqueness) and keeps the appointment's existing status (`pending` or `approved`) rather than resetting it.
 - **All times stored in UTC; clinic timezone is Africa/Nairobi (EAT, UTC+3).** The clinic operates in a single timezone; storing UTC avoids ambiguity and keeps slot-matching logic timezone-agnostic, while doctor working hours and availability are interpreted in Africa/Nairobi and only converted to/from UTC at the API boundary.
-- **Growth beyond 5 doctors requires no schema change** — `doctor_id` is just an indexed foreign key, so the design isn't hardcoded to a fixed doctor count.
+- **Growth beyond 5 doctors requires no schema change** — `doctor_id` is a plain foreign key (the leading column of the partial `(doctor_id, slot_start)` index), so the design isn't hardcoded to a fixed doctor count.
 - **Dockerized API + Compose-managed database.** Running Postgres via Docker Compose removes "works on my machine" setup friction and keeps local dev close to how the service would run in a container-based deployment. The trade-off is a Docker dependency for local development, which is acceptable given the deployment target is also container-based.
 - **FastAPI over Django REST Framework.** FastAPI is fast and ships with built-in interactive API docs (Swagger UI / ReDoc), which makes it easy to exercise the deployed endpoints post-deployment without needing separate API-testing tooling.
 
@@ -82,6 +84,9 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 - Booking within 1 hour of the current time (stretch rule).
 - Approving or rejecting an appointment that's already `approved`, `rejected`, or `cancelled`.
 - Cancelling an appointment that's already `cancelled` or `rejected`.
+- Rescheduling to a slot that's outside working hours, in the past, misaligned, or already taken — same validation as a fresh booking.
+- Rescheduling an appointment that's already `cancelled` or `rejected`.
+- Rescheduling frees the original slot, so it must become bookable by someone else immediately.
 - Requesting availability for a weekend date — should return an empty slot list, not an error.
 - Requesting availability or booking against a non-existent `doctor_id`.
 - Booking near a UTC day boundary that falls on a different local (Africa/Nairobi) day, or vice versa.
@@ -109,7 +114,7 @@ app/
     v1/router.py                   # aggregates versioned routers
     v1/endpoints/                   # doctors, patients, appointments, health
 alembic/                       # DB migrations
-tests/                        # pytest suite (helpers.py has shared fixtures/date utilities)
+tests/                        # pytest suite (conftest.py has shared fixtures; helpers.py has date/create-object utilities)
 ```
 
 Each request flows `api` → `services` → `repositories` → `db`, so HTTP concerns, business rules, and persistence stay separated. `services` raise plain Python exceptions (e.g. `DoctorNotFoundError`, `InvalidStatusTransitionError`); the `api` layer is the only place that translates those into HTTP status codes.
@@ -187,18 +192,21 @@ Endpoints from the original spec:
 |---|---|
 | `POST /appointments` | ✅ implemented |
 | `GET /doctors/{id}/availability` | ✅ implemented |
-| `PATCH /appointments/{id}/approve` | ✅ implemented |
-| `PATCH /appointments/{id}/reject` | ✅ implemented |
 | `PATCH /appointments/{id}/cancel` | ✅ implemented |
+| `PATCH /appointments/{id}/reschedule` | ✅ implemented |
 | `GET /patients/{id}/appointments` *(stretch)* | ✅ implemented |
 
-Added beyond the original spec, since auth/user-management is out of scope (see Assumptions) and there was otherwise no way to seed data:
+Added beyond the original spec, since auth/user-management is out of scope (see Assumptions) and there was otherwise no way to seed data or model a doctor declining a booking:
 
 - `POST /doctors` — create a doctor. Enforces a unique `name` (`409` on duplicate) so retries can't silently create duplicate doctors.
 - `POST /patients` — create a patient. No uniqueness constraint — unlike doctors, two real patients can legitimately share a name.
+- `PATCH /appointments/{id}/approve` — doctor approves a pending appointment.
+- `PATCH /appointments/{id}/reject` — doctor rejects a pending appointment with a reason; the slot becomes bookable again.
 - `GET /health` — reports both app and DB status (`{"app": "ok", "db": "ok"}`), `503` if the DB is unreachable.
 
 ### Sample Requests
+
+Each example below is an independent, illustrative snippet — several reuse `appointment_id: 1` for simplicity, so running them back-to-back in the order shown will hit `409`s once that appointment leaves the `pending` state (e.g. after Approve, a subsequent Reject on the same ID is correctly rejected).
 
 **Health check**
 
@@ -300,6 +308,18 @@ curl -X PATCH http://127.0.0.1:8000/appointments/1/cancel \
 ```
 Valid from `pending` or `approved`; returns `409` if already `cancelled` or `rejected`.
 
+**Reschedule an appointment**
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/appointments/1/reschedule \
+  -H "Content-Type: application/json" \
+  -d '{"slot_start": "2026-07-16T07:00:00Z"}'
+```
+```json
+{"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T07:00:00Z", "status": "pending", "reason": null, "created_at": "..."}
+```
+The original slot (`06:00:00Z`) becomes bookable again; the new `slot_start` is validated exactly like a fresh booking. Status is unchanged. Returns `422` on an invalid new slot, `409` if the new slot is taken or the appointment is `cancelled`/`rejected`, `404` for an unknown `id`.
+
 **List a patient's upcoming appointments**
 
 ```bash
@@ -323,7 +343,7 @@ docker compose up -d db     # tests need a live Postgres instance
 pytest
 ```
 
-38 tests in `tests/`, covering the full booking lifecycle and the edge cases listed above: creation (doctors/patients, including duplicate-name handling), availability (weekday grid, weekend empty list, unknown doctor, booked-slot exclusion), booking/approve/reject/cancel (happy paths, every invalid-status-transition case, lead-time/working-hours/grid-alignment/weekend validation, the double-booking race condition via the DB constraint, and every `404` on an unknown ID), the `/health` DB-unreachable branch (mocked `OperationalError`), and the `get_db` dependency itself (session yielded and closed).
+46 tests in `tests/`, covering the full booking lifecycle and the edge cases listed above: creation (doctors/patients, including duplicate-name handling), availability (weekday grid, weekend empty list, unknown doctor, booked-slot exclusion), booking/approve/reject/cancel/reschedule (happy paths, every invalid-status-transition case, lead-time/working-hours/grid-alignment/weekend validation, the double-booking race condition via the DB constraint, rescheduling freeing the original slot, and every `404` on an unknown ID), the `/health` DB-unreachable branch (mocked `OperationalError`), and the `get_db` dependency itself (session yielded and closed).
 
 **Coverage:**
 
@@ -331,5 +351,9 @@ pytest
 pytest --cov=app --cov-report=term-missing
 ```
 
-Currently 100% line coverage (404/404 statements).
+Currently 100% line coverage (435/435 statements).
+
+### AI Reflection
+
+See [AI_REFLECTION.md](./AI_REFLECTION.md).
 
