@@ -179,6 +179,12 @@ def test_reject_already_rejected_returns_409(client):
     assert response.status_code == 409
 
 
+def test_reject_unknown_appointment_returns_404(client):
+    response = client.patch("/appointments/999999/reject", json={"reason": "test"})
+
+    assert response.status_code == 404
+
+
 def test_rejected_slot_becomes_bookable_again(client):
     doctor_id = create_doctor(client)
     patient_id = create_patient(client)
