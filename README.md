@@ -65,6 +65,7 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 
 - **Authentication and authorization are out of scope.** User management (patient/doctor identity, login, permissions) is assumed to already be handled elsewhere. The API focuses solely on the specified booking endpoints, and `patient_id` / `doctor_id` are trusted as given rather than derived from an authenticated session.
 - **Doctors work Monday–Friday.** Working hours apply to weekdays only; weekends have no available slots. This can be revisited if the clinic later needs weekend or per-doctor variable schedules.
+- **"Upcoming" for `GET /patients/{id}/appointments` means future *and* still active.** It returns `pending`/`approved` appointments with `slot_start` in the future, sorted ascending — a patient looking at what's coming up doesn't want appointments they already cancelled or that were rejected cluttering the list.
 
 ### Testing & Edge Cases to Consider
 
@@ -147,7 +148,7 @@ Endpoints from the original spec:
 | `PATCH /appointments/{id}/approve` | ✅ implemented |
 | `PATCH /appointments/{id}/reject` | ✅ implemented |
 | `PATCH /appointments/{id}/cancel` | ✅ implemented |
-| `GET /patients/{id}/appointments` *(stretch)* | ⬜ not yet built |
+| `GET /patients/{id}/appointments` *(stretch)* | ✅ implemented |
 
 Added beyond the original spec, since auth/user-management is out of scope (see Assumptions) and there was otherwise no way to seed data:
 
@@ -256,4 +257,29 @@ curl -X PATCH http://127.0.0.1:8000/appointments/1/cancel \
 {"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-16T06:00:00Z", "status": "cancelled", "reason": "Patient requested cancellation", "created_at": "..."}
 ```
 Valid from `pending` or `approved`; returns `409` if already `cancelled` or `rejected`.
+
+**List a patient's upcoming appointments**
+
+```bash
+curl "http://127.0.0.1:8000/patients/1/appointments"
+```
+```json
+[
+  {"id": 2, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-17T06:00:00Z", "status": "pending", "reason": null, "created_at": "..."},
+  {"id": 1, "doctor_id": 1, "patient_id": 1, "slot_start": "2026-07-20T10:00:00Z", "status": "approved", "reason": null, "created_at": "..."}
+]
+```
+Only future `pending`/`approved` appointments, sorted by `slot_start` ascending; `cancelled`/`rejected` ones are excluded (see Assumptions). Unknown `patient_id` returns `404`.
+
+### Testing
+
+Tests run against a dedicated `clinic_booking_test` database on the same Postgres instance (created automatically if missing), not the dev database — this is deliberate, since the concurrency guard is a Postgres-specific partial unique index that a SQLite in-memory DB can't replicate faithfully.
+
+```bash
+pip install -r requirements-dev.txt
+docker compose up -d db     # tests need a live Postgres instance
+pytest
+```
+
+32 tests in `tests/`, covering the full booking lifecycle and the edge cases listed above: creation (doctors/patients, including duplicate-name handling), availability (weekday grid, weekend empty list, unknown doctor, booked-slot exclusion), and booking/approve/reject/cancel (happy paths, every invalid-status-transition case, lead-time/working-hours/grid-alignment/weekend validation, and the double-booking race condition via the DB constraint).
 

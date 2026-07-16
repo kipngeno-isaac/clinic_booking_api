@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 
 from sqlalchemy.orm import Session
 
-from app.models.appointment import Appointment
+from app.models.appointment import Appointment, AppointmentStatus
 
 
 def get(db: Session, appointment_id: int) -> Appointment | None:
@@ -28,5 +28,18 @@ def list_for_doctor_on_date(
             Appointment.slot_start >= local_day_start,
             Appointment.slot_start < local_day_end,
         )
+        .all()
+    )
+
+
+def list_upcoming_for_patient(db: Session, patient_id: int, now: datetime) -> list[Appointment]:
+    return (
+        db.query(Appointment)
+        .filter(
+            Appointment.patient_id == patient_id,
+            Appointment.slot_start >= now,
+            Appointment.status.in_([AppointmentStatus.PENDING, AppointmentStatus.APPROVED]),
+        )
+        .order_by(Appointment.slot_start.asc())
         .all()
     )
