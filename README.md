@@ -1,5 +1,8 @@
 # Clinic Booking API
 
+[![CI/CD](https://github.com/kipngeno-isaac/clinic_booking_api/actions/workflows/ci.yml/badge.svg)](https://github.com/kipngeno-isaac/clinic_booking_api/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/kipngeno-isaac/clinic_booking_api/branch/main/graph/badge.svg)](https://codecov.io/gh/kipngeno-isaac/clinic_booking_api)
+
 The system is a clinic appointment booking API that allows patients to view doctor availability, book appointments, and cancel existing appointments.
 
 ## Core Functionality
@@ -142,14 +145,17 @@ alembic upgrade head
 
 `.github/workflows/ci.yml` runs on every pull request and on pushes to `main`/`dev`:
 
-1. **`test`** — spins up a `postgres:16-alpine` service container, installs `requirements-dev.txt`, runs the full pytest suite with coverage.
+1. **`test`** — spins up a `postgres:16-alpine` service container, installs `requirements-dev.txt`, runs the full pytest suite with coverage, uploads the coverage report to [Codecov](https://codecov.io).
 2. **`build`** — `needs: test`, so it only runs if every test passes. Builds the Docker image to validate it builds cleanly. On a push to `main` specifically (i.e. a PR just got merged), it additionally logs into **Docker Hub** and pushes the image (`docker.io/kipngenoisaac/clinic-booking-api`) tagged both `latest` and `<commit-sha>`.
 3. **`deploy`** — `needs: build`, same "push to `main`" condition. SSHes into the deployment VM (via [`appleboy/ssh-action`](https://github.com/appleboy/ssh-action)) and runs `docker compose -f docker-compose.prod.yml pull && up -d`.
+
+The two README badges above reflect this: the CI/CD badge is this workflow's overall status (test + build + deploy all in one workflow, so it's also the de facto "tests passing" badge), and the codecov badge tracks line coverage over time.
 
 **Required GitHub Actions secrets** (Settings → Secrets and variables → Actions):
 
 | Secret | Purpose |
 |---|---|
+| `CODECOV_TOKEN` | Codecov upload token (codecov.io → repo settings) — optional for public repos but avoids upload rate-limiting |
 | `DOCKERHUB_USERNAME` | Docker Hub username (`kipngenoisaac`) |
 | `DOCKERHUB_TOKEN` | Docker Hub access token (Account Settings → Security → Access Tokens — not your account password) |
 | `VM_HOST` | VM's public IP or hostname |
@@ -160,7 +166,8 @@ alembic upgrade head
 **VM-side setup — done:** Docker 29.6.1 + Compose v5.3.1 confirmed installed and running, `ubuntu` user is in the `docker` group (no `sudo` needed), `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are already in place.
 
 **Still outstanding:**
-- Add the 6 secrets above in GitHub.
+- Add the 7 secrets above in GitHub.
+- Sign up at codecov.io with your GitHub account and add the repo (needed for the coverage badge to render — it'll otherwise show "unknown").
 - Make the Docker Hub repo (`kipngenoisaac/clinic-booking-api`) pullable from the VM — public repos need nothing extra; a private repo needs `docker login` on the VM with a Docker Hub access token first.
 - Confirm the cloud provider's security group/network firewall allows inbound TCP 8000 (the VM's own `ufw` is inactive, so nothing local is blocking it, but that's a separate layer).
 
