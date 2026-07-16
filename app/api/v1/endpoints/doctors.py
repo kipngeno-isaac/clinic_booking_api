@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.schemas.doctor import AvailabilitySlot, DoctorCreate, DoctorRead
 from app.services import availability_service, doctor_service
-from app.services.availability_service import DoctorNotFoundError
+from app.services.appointment_service import DoctorNotFoundError
 from app.services.doctor_service import DoctorAlreadyExistsError
 
 router = APIRouter()

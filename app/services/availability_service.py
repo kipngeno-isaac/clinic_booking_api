@@ -6,10 +6,7 @@ from app.core.constants import CLINIC_TZ, SATURDAY, SLOT_MINUTES
 from app.models.appointment import AppointmentStatus
 from app.repositories import appointment_repository, doctor_repository
 from app.schemas.doctor import AvailabilitySlot
-
-
-class DoctorNotFoundError(Exception):
-    pass
+from app.services.appointment_service import DoctorNotFoundError
 
 
 def get_availability(db: Session, doctor_id: int, on: date_) -> list[AvailabilitySlot]:
