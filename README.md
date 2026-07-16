@@ -59,12 +59,12 @@ The initial system supports a small clinic with 5 doctors, where each doctor has
 ### Key Design Decisions & Trade-offs
 
 - **Slots are computed, not pre-generated.** Availability for `GET /doctors/{id}/availability` is derived at request time from the doctor's working hours minus existing `pending`/`approved` appointments, rather than materializing a row per slot per day. Simpler to reason about and avoids a background job to pre-populate future slots; the trade-off is a bit more computation per availability request, which is acceptable at this scale.
-- **Concurrency safety via a DB constraint, not just an application check.** A "check then insert" pattern is a race condition under concurrent requests for the same slot. The plan is a unique constraint on `(doctor_id, slot_start)` (or `SELECT ... FOR UPDATE` inside a transaction) so the database — not application logic — is the source of truth for "slot taken."
+- **Concurrency safety via a DB constraint, not just an application check.** A "check then insert" pattern is a race condition under concurrent requests for the same slot. A partial unique index on `(doctor_id, slot_start)` (scoped to `pending`/`approved` rows) enforces this at the database level instead, so the database — not application logic — is the source of truth for "slot taken." Verified by a concurrency test that fires two simultaneous booking requests for the same slot and asserts only one succeeds.
 - **Booking creates a pending appointment, not an immediately confirmed one.** A slot is held (excluded from availability) as soon as it's booked, but requires doctor approval to become confirmed. This models real clinic behavior — the doctor has final say over their schedule — while still preventing double-booking of the same slot during the pending window.
 - **Status changes are flags, not deletes.** Cancelled/rejected appointments stay in the table rather than being removed, preserving history and freeing the slot without losing the audit trail.
 - **Rescheduling is disallowed for `rejected`, not just `cancelled`.** The spec only calls out returning an error for a cancelled appointment; `rejected` is treated the same way since it's an equally terminal state — a doctor already declined the slot, so moving it to a new time doesn't reflect their decision. This is noted as an ambiguity resolution rather than a spec requirement. Rescheduling reuses the exact same slot validation as a fresh booking (working hours, lead time, alignment, uniqueness) and keeps the appointment's existing status (`pending` or `approved`) rather than resetting it.
 - **All times stored in UTC; clinic timezone is Africa/Nairobi (EAT, UTC+3).** The clinic operates in a single timezone; storing UTC avoids ambiguity and keeps slot-matching logic timezone-agnostic, while doctor working hours and availability are interpreted in Africa/Nairobi and only converted to/from UTC at the API boundary.
-- **Growth beyond 5 doctors requires no schema change** — `doctor_id` is just an indexed foreign key, so the design isn't hardcoded to a fixed doctor count.
+- **Growth beyond 5 doctors requires no schema change** — `doctor_id` is a plain foreign key (the leading column of the partial `(doctor_id, slot_start)` index), so the design isn't hardcoded to a fixed doctor count.
 - **Dockerized API + Compose-managed database.** Running Postgres via Docker Compose removes "works on my machine" setup friction and keeps local dev close to how the service would run in a container-based deployment. The trade-off is a Docker dependency for local development, which is acceptable given the deployment target is also container-based.
 - **FastAPI over Django REST Framework.** FastAPI is fast and ships with built-in interactive API docs (Swagger UI / ReDoc), which makes it easy to exercise the deployed endpoints post-deployment without needing separate API-testing tooling.
 
@@ -114,7 +114,7 @@ app/
     v1/router.py                   # aggregates versioned routers
     v1/endpoints/                   # doctors, patients, appointments, health
 alembic/                       # DB migrations
-tests/                        # pytest suite (helpers.py has shared fixtures/date utilities)
+tests/                        # pytest suite (conftest.py has shared fixtures; helpers.py has date/create-object utilities)
 ```
 
 Each request flows `api` → `services` → `repositories` → `db`, so HTTP concerns, business rules, and persistence stay separated. `services` raise plain Python exceptions (e.g. `DoctorNotFoundError`, `InvalidStatusTransitionError`); the `api` layer is the only place that translates those into HTTP status codes.
@@ -205,6 +205,8 @@ Added beyond the original spec, since auth/user-management is out of scope (see 
 - `GET /health` — reports both app and DB status (`{"app": "ok", "db": "ok"}`), `503` if the DB is unreachable.
 
 ### Sample Requests
+
+Each example below is an independent, illustrative snippet — several reuse `appointment_id: 1` for simplicity, so running them back-to-back in the order shown will hit `409`s once that appointment leaves the `pending` state (e.g. after Approve, a subsequent Reject on the same ID is correctly rejected).
 
 **Health check**
 
