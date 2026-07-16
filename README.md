@@ -5,6 +5,8 @@
 
 The system is a clinic appointment booking API that allows patients to view doctor availability, book appointments, and cancel existing appointments.
 
+**Live API docs:** [clinic-booking-api.unirouteglobal.org/docs](https://clinic-booking-api.unirouteglobal.org/docs)
+
 ## Core Functionality
 
 The service implements four primary operations: checking a doctor's available slots, booking a slot, a doctor approving or rejecting a pending appointment, and cancelling an appointment.
@@ -163,15 +165,17 @@ The two README badges above reflect this: the CI/CD badge is this workflow's ove
 | `VM_SSH_KEY` | Private key for that user (public key must be in the VM's `~/.ssh/authorized_keys`) |
 | `VM_APP_DIR` | Absolute path on the VM containing `docker-compose.prod.yml` and `.env` |
 
-**VM-side setup — done:** Docker 29.6.1 + Compose v5.3.1 confirmed installed and running, `ubuntu` user is in the `docker` group (no `sudo` needed), `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are already in place.
+**VM-side setup — done:** Docker + Docker Compose confirmed installed and running, `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are in place at the deploy directory.
+
+**Deployment manually verified end-to-end on this VM:** pulled `kipngenoisaac/clinic-booking-api:latest` from Docker Hub, brought up `db` + `api` via `docker-compose.prod.yml`, Alembic ran all migrations automatically against the fresh database, and `/health` plus a real request (create doctor → check availability) both worked correctly — confirmed both from the VM itself and externally at [clinic-booking-api.unirouteglobal.org](https://clinic-booking-api.unirouteglobal.org/docs).
 
 **Still outstanding:**
-- Add the 7 secrets above in GitHub.
+- Add the 7 secrets above in GitHub, so the `deploy` job can reach this VM automatically instead of the pull/up steps being run by hand (as done above).
 - Sign up at codecov.io with your GitHub account and add the repo (needed for the coverage badge to render — it'll otherwise show "unknown").
-- Make the Docker Hub repo (`kipngenoisaac/clinic-booking-api`) pullable from the VM — public repos need nothing extra; a private repo needs `docker login` on the VM with a Docker Hub access token first.
-- Confirm the cloud provider's security group/network firewall allows inbound TCP 8000 (the VM's own `ufw` is inactive, so nothing local is blocking it, but that's a separate layer).
 
-`docker-compose.prod.yml` differs from the dev `docker-compose.yml`: it pulls the prebuilt Docker Hub image instead of building locally, drops the `--reload` flag and the source bind-mount, and — since this is a publicly reachable VM — does **not** expose Postgres's port to the host, only to `api` over the internal Docker network.
+**Note:** an earlier VM was tried first but had to be abandoned — its cloud firewall was intermittently blocking inbound SSH (both from GitHub Actions and direct connections), unrelated to anything in this repo. It was replaced with the current VM above.
+
+`docker-compose.prod.yml` differs from the dev `docker-compose.yml`: it pulls the prebuilt Docker Hub image instead of building locally, drops the `--reload` flag and the source bind-mount, and — since this is a publicly reachable VM — does **not** expose Postgres's port to the host, only to `api` over the internal Docker network. The `api` service itself is published as `127.0.0.1:8000:8000` rather than `8000:8000`, so it's reachable only from the VM's own nginx, not directly from the public internet; nginx terminates TLS and reverse-proxies the public hostname to it.
 
 **Not yet verified end-to-end:** the `test` and `build` jobs (image build, tagging) have been validated locally against equivalent configuration. The actual SSH deploy and Docker Hub push are unverified until the secrets above are added and a real PR merges to `main`.
 

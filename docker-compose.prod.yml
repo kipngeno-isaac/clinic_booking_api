@@ -24,11 +24,14 @@ services:
     environment:
       POSTGRES_HOST: db
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # Bound to localhost only: reachable from the VM's own nginx (which
+    # terminates TLS and reverse-proxies the public hostname), not directly
+    # from the public internet.
 
 volumes:
   postgres_data:
