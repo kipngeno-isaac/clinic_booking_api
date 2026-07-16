@@ -163,11 +163,15 @@ The two README badges above reflect this: the CI/CD badge is this workflow's ove
 | `VM_SSH_KEY` | Private key for that user (public key must be in the VM's `~/.ssh/authorized_keys`) |
 | `VM_APP_DIR` | Absolute path on the VM containing `docker-compose.prod.yml` and `.env` |
 
-**VM-side setup — done:** Docker 29.6.1 + Compose v5.3.1 confirmed installed and running, `ubuntu` user is in the `docker` group (no `sudo` needed), `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are already in place.
+**VM-side setup — done:** Docker + Docker Compose confirmed installed and running, `docker-compose.prod.yml` and a production `.env` (freshly generated random Postgres password, not the dev defaults) are in place at the deploy directory.
+
+**Deployment manually verified end-to-end on this VM:** pulled `kipngenoisaac/clinic-booking-api:latest` from Docker Hub, brought up `db` + `api` via `docker-compose.prod.yml`, Alembic ran all migrations automatically against the fresh database, and `/health` plus a real request (create doctor → check availability) both worked correctly — confirmed both from the VM itself and externally.
 
 **Still outstanding:**
-- Add the 7 secrets above in GitHub.
+- Add the 7 secrets above in GitHub, so the `deploy` job can reach this VM automatically instead of the pull/up steps being run by hand (as done above).
 - Sign up at codecov.io with your GitHub account and add the repo (needed for the coverage badge to render — it'll otherwise show "unknown").
+
+**Note:** an earlier VM was tried first but had to be abandoned — its cloud firewall was intermittently blocking inbound SSH (both from GitHub Actions and direct connections), unrelated to anything in this repo. It was replaced with the current VM above.
 - Make the Docker Hub repo (`kipngenoisaac/clinic-booking-api`) pullable from the VM — public repos need nothing extra; a private repo needs `docker login` on the VM with a Docker Hub access token first.
 - Confirm the cloud provider's security group/network firewall allows inbound TCP 8000 (the VM's own `ufw` is inactive, so nothing local is blocking it, but that's a separate layer).
 
