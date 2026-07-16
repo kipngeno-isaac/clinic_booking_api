@@ -249,3 +249,100 @@ def test_cancel_unknown_appointment_returns_404(client):
     response = client.patch("/appointments/999999/cancel", json={"reason": "test"})
 
     assert response.status_code == 404
+
+
+def _reschedule(client, appt_id, new_slot_start):
+    return client.patch(
+        f"/appointments/{appt_id}/reschedule",
+        json={"slot_start": new_slot_start.isoformat()},
+    )
+
+
+def test_reschedule_pending_appointment(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+    new_slot = next_weekday_at(11)
+
+    response = _reschedule(client, appt_id, new_slot)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["slot_start"] == new_slot.isoformat().replace("+00:00", "Z")
+
+
+def test_reschedule_approved_appointment(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+    client.patch(f"/appointments/{appt_id}/approve")
+
+    response = _reschedule(client, appt_id, next_weekday_at(11))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+
+
+def test_reschedule_frees_original_slot(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    other_patient_id = create_patient(client, name="Second Patient")
+    original_slot = next_weekday_at(9)
+    appt_id = _book(client, doctor_id, patient_id, original_slot).json()["id"]
+    _reschedule(client, appt_id, next_weekday_at(11))
+
+    response = _book(client, doctor_id, other_patient_id, original_slot)
+
+    assert response.status_code == 201
+
+
+def test_reschedule_to_taken_slot_returns_409(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    other_patient_id = create_patient(client, name="Second Patient")
+    taken_slot = next_weekday_at(11)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+    _book(client, doctor_id, other_patient_id, taken_slot)
+
+    response = _reschedule(client, appt_id, taken_slot)
+
+    assert response.status_code == 409
+
+
+def test_reschedule_outside_working_hours_returns_422(client):
+    doctor_id = create_doctor(client, work_start="09:00:00", work_end="17:00:00")
+    patient_id = create_patient(client)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+
+    response = _reschedule(client, appt_id, next_weekday_at(19))
+
+    assert response.status_code == 422
+
+
+def test_reschedule_cancelled_appointment_returns_409(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+    client.patch(f"/appointments/{appt_id}/cancel", json={"reason": "no longer needed"})
+
+    response = _reschedule(client, appt_id, next_weekday_at(11))
+
+    assert response.status_code == 409
+
+
+def test_reschedule_rejected_appointment_returns_409(client):
+    doctor_id = create_doctor(client)
+    patient_id = create_patient(client)
+    appt_id = _book(client, doctor_id, patient_id, next_weekday_at(9)).json()["id"]
+    client.patch(f"/appointments/{appt_id}/reject", json={"reason": "doctor unavailable"})
+
+    response = _reschedule(client, appt_id, next_weekday_at(11))
+
+    assert response.status_code == 409
+
+
+def test_reschedule_unknown_appointment_returns_404(client):
+    response = _reschedule(client, 999999, next_weekday_at(11))
+
+    assert response.status_code == 404

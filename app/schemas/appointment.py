@@ -11,6 +11,10 @@ class AppointmentCreate(BaseModel):
     slot_start: datetime
 
 
+class AppointmentReschedule(BaseModel):
+    slot_start: datetime
+
+
 class AppointmentStatusUpdate(BaseModel):
     reason: str
 
